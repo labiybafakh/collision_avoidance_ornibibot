@@ -21,6 +21,7 @@ find_package(OpenGL REQUIRED)
 find_package(GLUT REQUIRED)
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(PCL REQUIRED COMPONENTS common io filters features segmentation surface sample_consensus)
+find_package(OpenCV REQUIRED)
 
 # FreeRTOS Configuration
 set(FREERTOS_KERNEL_PATH ${CMAKE_SOURCE_DIR}/third_party/FreeRTOS-Kernel)
@@ -74,6 +75,7 @@ target_include_directories(picoflexx_processor PRIVATE
     ${royale_DIR}/include
     ${EIGEN3_INCLUDE_DIR}
     ${PCL_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
     ${FREERTOS_KERNEL_PATH}/include
     ${FREERTOS_PORT_PATH}
 )
@@ -89,6 +91,7 @@ target_link_libraries(picoflexx_processor PRIVATE
     ${ROYALE_LIB}
     Eigen3::Eigen
     ${PCL_LIBRARIES}
+    ${OpenCV_LIBS}
     freertos
     pthread
 )

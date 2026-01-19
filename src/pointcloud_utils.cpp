@@ -8,6 +8,13 @@
 #include <pcl/PolygonMesh.h>
 #include <pcl/conversions.h>
 
+void PointCloudUtils::rotateZ90(std::vector<point3d>& cloud) {
+    for (auto& pt : cloud) {
+        float temp = pt.x;
+        pt.x = pt.y;
+        pt.y = -temp;
+    }
+}
 
 pcl::PointCloud<pcl::PointXYZ> PointCloudUtils::convertToPCL(const std::vector<point3d>& cloud) const {
     pcl::PointCloud<pcl::PointXYZ> pcl_cloud;

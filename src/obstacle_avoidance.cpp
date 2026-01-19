@@ -26,7 +26,7 @@ AvoidanceCommand ObstacleAvoidance::processPointCloud(const std::vector<point3d>
     stats_.rightObstacles = 0;
     stats_.minDistance = std::numeric_limits<float>::max();
     
-    // Create obstacle grid (similar to your 8x8 matrix approach)
+    // Create obstacle grid
     bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH] = {false};
     
     pointCloudToGrid(cloud, obstacleGrid);
@@ -86,6 +86,14 @@ void ObstacleAvoidance::pointCloudToGrid(const std::vector<point3d>& cloud,
             }
         }
     }
+    // // std::cout << ""
+    // for (int y = 0; y < GRID_HEIGHT; y++) {
+    //     for (int x = 0; x < GRID_WIDTH; x++) {
+    //         if (obstacleGrid[y][x]) std::cout << "#";
+    //         else            std::cout << ".";
+    //     }
+    //     std::cout << "\n";
+    // }
 }
 
 AvoidanceCommand ObstacleAvoidance::analyzeObstacleGrid(const bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH]) {

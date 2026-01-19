@@ -51,8 +51,8 @@ private:
     Statistics stats_;
     
     // Grid-based obstacle detection (similar to your 8x8 matrix approach)
-    static constexpr size_t GRID_WIDTH = 8;
-    static constexpr size_t GRID_HEIGHT = 8;
+    static constexpr size_t GRID_WIDTH = 120;
+    static constexpr size_t GRID_HEIGHT = 120;
     
     // Convert 3D points to 2D grid for obstacle detection
     void pointCloudToGrid(const std::vector<point3d>& cloud, 
