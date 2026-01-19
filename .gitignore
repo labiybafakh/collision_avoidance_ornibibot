@@ -1,0 +1,5 @@
+build/
+libroyale*
+.DS_Store
+.vscode/
+*.log
