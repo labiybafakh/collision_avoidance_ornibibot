@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <cstring>
 
 ObstacleAvoidance::ObstacleAvoidance() {
     // Initialize statistics
@@ -11,6 +12,9 @@ ObstacleAvoidance::ObstacleAvoidance() {
     stats_.rightObstacles = 0;
     stats_.minDistance = 0.0f;
     stats_.lastCommand = AvoidanceCommand::FORWARD;
+    for (auto &row : lastGrid_) {
+        row.fill(0);
+    }
 }
 
 AvoidanceCommand ObstacleAvoidance::processPointCloud(const std::vector<point3d>& cloud) {
@@ -40,6 +44,11 @@ AvoidanceCommand ObstacleAvoidance::processPointCloud(const std::vector<point3d>
 
 void ObstacleAvoidance::pointCloudToGrid(const std::vector<point3d>& cloud, 
                                         bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH]) {
+    
+    // Clear last grid visualization buffer
+    for (auto &row : lastGrid_) {
+        row.fill(0);
+    }
     
     // Use configurable navigation envelope parameters
     const float MAX_RANGE = params_.maxRange;
@@ -76,6 +85,7 @@ void ObstacleAvoidance::pointCloudToGrid(const std::vector<point3d>& cloud,
             // Mark obstacle in grid if within safety distance
             if (distance < params_.safetyDistance) {
                 obstacleGrid[gridY][gridX] = true;
+                lastGrid_[gridY][gridX] = 255;
                 
                 // Count left vs right obstacles (based on X coordinate)
                 if (point.x < 0) {  // Left side (negative X)
@@ -86,14 +96,7 @@ void ObstacleAvoidance::pointCloudToGrid(const std::vector<point3d>& cloud,
             }
         }
     }
-    // // std::cout << ""
-    // for (int y = 0; y < GRID_HEIGHT; y++) {
-    //     for (int x = 0; x < GRID_WIDTH; x++) {
-    //         if (obstacleGrid[y][x]) std::cout << "#";
-    //         else            std::cout << ".";
-    //     }
-    //     std::cout << "\n";
-    // }
+
 }
 
 AvoidanceCommand ObstacleAvoidance::analyzeObstacleGrid(const bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH]) {
@@ -147,4 +150,15 @@ AvoidanceCommand ObstacleAvoidance::analyzeObstacleGrid(const bool obstacleGrid[
     }
     
     return AvoidanceCommand::FORWARD;
+}
+
+cv::Mat ObstacleAvoidance::getGridVisualization() const {
+    // Occupancy in white on black background
+    cv::Mat grid(static_cast<int>(GRID_HEIGHT), static_cast<int>(GRID_WIDTH), CV_8UC1);
+    for (size_t y = 0; y < GRID_HEIGHT; ++y) {
+        const uint8_t* rowSrc = lastGrid_[y].data();
+        uint8_t* rowDst = grid.ptr<uint8_t>(static_cast<int>(y));
+        std::memcpy(rowDst, rowSrc, GRID_WIDTH);
+    }
+    return grid;
 }

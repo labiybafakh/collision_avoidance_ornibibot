@@ -20,6 +20,40 @@
 
 // Set to 1 for debug output, 0 for release
 #define DEBUG_MODE 0
+// Toggle OpenCV obstacle grid window
+#define SHOW_GRID 0
+
+// Rotate depth and gray images 90° CCW to match point cloud transform
+static void rotateFrameImages(FrameData& frame) {
+    if (frame.width == 0 || frame.height == 0 ||
+        frame.depthImage.empty() || frame.grayImage.empty()) {
+        return;
+    }
+
+    const uint16_t origWidth = frame.width;
+    const uint16_t origHeight = frame.height;
+    const uint32_t newWidth = origHeight;
+    const uint32_t newHeight = origWidth;
+
+    std::vector<float> rotatedDepth(newWidth * newHeight, 0.0f);
+    std::vector<uint16_t> rotatedGray(newWidth * newHeight, 0);
+
+    for (uint32_t y = 0; y < origHeight; ++y) {
+        for (uint32_t x = 0; x < origWidth; ++x) {
+            uint32_t srcIdx = y * origWidth + x;
+            uint32_t dstX = y;
+            uint32_t dstY = origWidth - 1 - x;
+            uint32_t dstIdx = dstY * newWidth + dstX;
+            rotatedDepth[dstIdx] = frame.depthImage[srcIdx];
+            rotatedGray[dstIdx] = frame.grayImage[srcIdx];
+        }
+    }
+
+    frame.width = static_cast<uint16_t>(newWidth);
+    frame.height = static_cast<uint16_t>(newHeight);
+    frame.depthImage.swap(rotatedDepth);
+    frame.grayImage.swap(rotatedGray);
+}
 
 picoflexx picoflexx_;
 PointCloudUtils pc_utils;
@@ -72,9 +106,8 @@ void vPointCloudTask(void *pvParameters) {
         FrameData frame = picoflexx_.getFrameData();
 
         if (frame.hasData) {
+            rotateFrameImages(frame);
             // Rotate -90° around Z-axis to align camera frame
-            PointCloudUtils::rotateZ90(frame.pointCloud);
-
             if (xSemaphoreTake(xDataMutex, portMAX_DELAY) == pdTRUE) {
                 sharedFrameData = frame;
                 xSemaphoreGive(xDataMutex);
@@ -244,6 +277,8 @@ void vDepthImageTask(void *pvParameters) {
             // Create OpenCV Mat from depth data (like ROS TYPE_32FC1)
             cv::Mat depthMat(height, width, CV_32FC1, depthImage.data());
 
+            std::cout << "width: " << width << "  height" << height << "\n";
+
             // Normalize depth to 0-255 for visualization
             cv::Mat depthNorm;
             depthMat.convertTo(depthNorm, CV_8UC1, 255.0 / maxFilter);
@@ -252,23 +287,25 @@ void vDepthImageTask(void *pvParameters) {
             cv::Mat depthColor;
             cv::applyColorMap(depthNorm, depthColor, cv::COLORMAP_JET);
 
-            // Rotate -90 degrees (counterclockwise)
-            cv::Mat depthRotated;
-            cv::rotate(depthColor, depthRotated, cv::ROTATE_90_COUNTERCLOCKWISE);
-
             // Create gray image Mat (like ROS MONO16)
             cv::Mat grayMat(height, width, CV_16UC1, grayImage.data());
             cv::Mat grayNorm;
             grayMat.convertTo(grayNorm, CV_8UC1, 255.0 / 1000.0);
 
-            // Rotate -90 degrees (counterclockwise)
-            cv::Mat grayRotated;
-            cv::rotate(grayNorm, grayRotated, cv::ROTATE_90_COUNTERCLOCKWISE);
-
             // Display images (startWindowThread handles GUI updates)
-            cv::imshow("Depth Image", depthRotated);
-            cv::imshow("Gray Image", grayRotated);
+            cv::imshow("Depth Image", depthColor);
+            cv::imshow("Gray Image", grayNorm);
             cv::waitKey(1);
+        }
+
+        if (SHOW_GRID) {
+            cv::Mat grid = obstacle_avoidance.getGridVisualization();
+            if (!grid.empty()) {
+                cv::Mat gridScaled;
+                cv::resize(grid, gridScaled, cv::Size(), 2.0, 2.0, cv::INTER_NEAREST);
+                cv::imshow("Obstacle Grid", gridScaled);
+                cv::waitKey(1);
+            }
         }
 
         vTaskDelayUntil(&xLastWakeTime, xFrequency);

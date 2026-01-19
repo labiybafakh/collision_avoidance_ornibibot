@@ -4,6 +4,9 @@
 #include <vector>
 #include <atomic>
 #include <memory>
+#include <array>
+#include <cstdint>
+#include <opencv2/opencv.hpp>
 #include "picoflexx.hpp"
 
 struct ObstacleAvoidanceParams {
@@ -45,14 +48,18 @@ public:
     };
     
     const Statistics& getStats() const { return stats_; }
+    
+    // Latest obstacle grid visualization
+    cv::Mat getGridVisualization() const;
 
 private:
+    // Grid-based obstacle detection (similar to your 8x8 matrix approach)
+    static constexpr size_t GRID_WIDTH = 480;
+    static constexpr size_t GRID_HEIGHT = 640;
+
     ObstacleAvoidanceParams params_;
     Statistics stats_;
-    
-    // Grid-based obstacle detection (similar to your 8x8 matrix approach)
-    static constexpr size_t GRID_WIDTH = 120;
-    static constexpr size_t GRID_HEIGHT = 120;
+    std::array<std::array<uint8_t, GRID_WIDTH>, GRID_HEIGHT> lastGrid_{};
     
     // Convert 3D points to 2D grid for obstacle detection
     void pointCloudToGrid(const std::vector<point3d>& cloud, 
