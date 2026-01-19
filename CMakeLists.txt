@@ -4,8 +4,16 @@ project(picoflexx_pointcloud)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
-# Set royale path
+# --- Royale (libroyale) ---
 set(royale_DIR ${CMAKE_SOURCE_DIR}/third_party/libroyale)
+set(royale_BIN_DIR ${royale_DIR}/bin)
+
+# Find platform-specific library in bin/
+if(APPLE)
+  set(ROYALE_LIB ${royale_BIN_DIR}/libroyale.dylib)
+elseif(UNIX)
+  set(ROYALE_LIB ${royale_BIN_DIR}/libroyale.so)
+endif()
 
 # Find packages
 #find_package(royale REQUIRED)
@@ -78,7 +86,7 @@ target_include_directories(pointcloud_viewer PRIVATE
 
 # Link libraries for FreeRTOS processor
 target_link_libraries(picoflexx_processor PRIVATE
-    ${royale_DIR}/bin/libroyale.dylib
+    ${ROYALE_LIB}
     Eigen3::Eigen
     ${PCL_LIBRARIES}
     freertos
