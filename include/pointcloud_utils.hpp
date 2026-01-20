@@ -19,10 +19,4 @@ public:
     pcl::PointCloud<pcl::PointXYZ> convertToPCL(const std::vector<point3d>& cloud) const;
     pcl::PointCloud<pcl::PointXYZ> downsamplePCL(const pcl::PointCloud<pcl::PointXYZ>& input_cloud, float downsampled_size) const;
     void visualizePCL(const pcl::PointCloud<pcl::PointXYZ>& pcl_cloud) const;
-    void detectCylinder(pcl::PointCloud<pcl::PointXYZ>& cloud) const;
-    void detectCircle(pcl::PointCloud<pcl::PointXYZ>& cloud) const;
-    pcl::PolygonMesh greedyTriangulation(const pcl::PointCloud<pcl::PointXYZ>& input_cloud) const;
-    void visualizeMesh(const pcl::PolygonMesh& mesh) const;
-    std::vector<pcl::PointIndices> regionGrowingSegmentation(const pcl::PointCloud<pcl::PointXYZ>& input_cloud) const;
-
 };

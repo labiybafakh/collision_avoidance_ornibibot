@@ -51,8 +51,18 @@ bool picoflexx::setUpCamera()
      royale::Vector<royale::String> useCases;
      auto usecase_ = m_cameraDevice->getUseCases(useCases);
 
+     desired_usecase_index = 0; // Initialize to first use case
      for(size_t i=0; i < useCases.size(); i++){
-        if(useCases[i] == "MODE_9_25FPS_450") desired_usecase_index = i;
+        if(useCases[i] == "MODE_9_25FPS_450") {
+            desired_usecase_index = i;
+            break;
+        }
+     }
+
+     // Safety check for bounds
+     if (useCases.empty()) {
+        std::cout << "No use cases available" << std::endl;
+        return false;
      }
 
     ret = m_cameraDevice->setUseCase(useCases[desired_usecase_index]);

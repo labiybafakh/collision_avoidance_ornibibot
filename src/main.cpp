@@ -13,10 +13,10 @@
 #include <chrono>
 #include <iomanip>
 #include <opencv2/opencv.hpp>
-
-#include "FreeRTOS.h"
-#include "task.h"
-#include "semphr.h"
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <sys/select.h>
 
 // Set to 1 for debug output, 0 for release
 #define DEBUG_MODE 0
@@ -55,19 +55,21 @@ static void rotateFrameImages(FrameData& frame) {
     frame.grayImage.swap(rotatedGray);
 }
 
+// Global objects
 picoflexx picoflexx_;
 PointCloudUtils pc_utils;
 ObstacleAvoidance obstacle_avoidance;
 
-// FreeRTOS handles
-TaskHandle_t xPointCloudTaskHandle = NULL;
-TaskHandle_t xUDPTaskHandle = NULL;
-TaskHandle_t xCollisionAvoidanceTaskHandle = NULL;
-TaskHandle_t xDepthImageTaskHandle = NULL;
-SemaphoreHandle_t xDataMutex = NULL;
+// Shared data protection
+std::mutex dataMutex;
+std::atomic<bool> shouldExit{false};
 
-// Shared frame data (like ROS)
+// Shared frame data
 FrameData sharedFrameData;
+
+// Shared display data for main thread
+cv::Mat sharedDepthColor, sharedGrayNorm, sharedGridScaled;
+std::atomic<bool> displayDataReady{false};
 
 // UDP socket
 int udp_socket = -1;
@@ -92,47 +94,39 @@ bool initUDP() {
     return true;
 }
 
-// FreeRTOS Task: Frame Data Acquisition (like ROS onNewData)
-void vPointCloudTask(void *pvParameters) {
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(33); // ~30 FPS
-
+// Thread: Frame Data Acquisition (like ROS onNewData)
+void pointCloudTask() {
 #if DEBUG_MODE
     std::cout << "Point Cloud Task started" << std::endl;
 #endif
 
-    while (1) {
+    while (!shouldExit.load()) {
         // Get all frame data at once (like ROS)
         FrameData frame = picoflexx_.getFrameData();
 
         if (frame.hasData) {
             // rotateFrameImages(frame);
             // Rotate -90° around Z-axis to align camera frame
-            if (xSemaphoreTake(xDataMutex, portMAX_DELAY) == pdTRUE) {
-                sharedFrameData = frame;
-                xSemaphoreGive(xDataMutex);
-            }
+            std::lock_guard<std::mutex> lock(dataMutex);
+            sharedFrameData = frame;
         }
 
-        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
     }
 }
 
-// FreeRTOS Task: Collision Avoidance Processing
-void vCollisionAvoidanceTask(void *pvParameters) {
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(33); // ~30 FPS
-
+// Thread: Collision Avoidance Processing
+void collisionAvoidanceTask() {
     AvoidanceCommand lastCommand = AvoidanceCommand::FORWARD;
 
-    while (1) {
+    while (!shouldExit.load()) {
         std::vector<point3d> cloud;
         std::chrono::microseconds timestamp{0};
 
-        if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
             cloud = sharedFrameData.pointCloud;
             timestamp = sharedFrameData.timestamp;
-            xSemaphoreGive(xDataMutex);
         }
 
         if (!cloud.empty()) {
@@ -166,16 +160,12 @@ void vCollisionAvoidanceTask(void *pvParameters) {
             lastCommand = avoidance_cmd;
         }
 
-        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
     }
 }
 
-// FreeRTOS Task: UDP Depth Image Sending
-// Sends fixed 224x172 uint8 depth image (38,528 bytes per frame)
-void vUDPTask(void *pvParameters) {
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(33); // ~30 FPS
-
+// Thread: UDP Depth Image Sending
+void udpTask() {
     const int UDP_WIDTH = 224;
     const int UDP_HEIGHT = 172;
     const float MAX_DEPTH = 4.0f;  // Max depth in meters for normalization
@@ -184,17 +174,17 @@ void vUDPTask(void *pvParameters) {
     std::cout << "UDP Task started (sending " << UDP_WIDTH << "x" << UDP_HEIGHT << " depth)" << std::endl;
 #endif
 
-    while (1) {
+    while (!shouldExit.load()) {
         uint16_t width = 0, height = 0;
         std::vector<float> depthImage;
 
-        if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
             if (sharedFrameData.width > 0 && !sharedFrameData.depthImage.empty()) {
                 width = sharedFrameData.width;
                 height = sharedFrameData.height;
                 depthImage = sharedFrameData.depthImage;
             }
-            xSemaphoreGive(xDataMutex);
         }
 
         if (width > 0 && height > 0 && !depthImage.empty()) {
@@ -219,30 +209,27 @@ void vUDPTask(void *pvParameters) {
             }
         }
 
-        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
     }
 }
 
-// FreeRTOS Task: Depth Image Display (like ROS depth_image topic)
-void vDepthImageTask(void *pvParameters) {
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(33); // 20 FPS for display
-
+// Thread: Prepare Image Display Data (like ROS depth_image topic)
+void depthImageTask() {
     const float maxFilter = 4.0f;  // Max depth in meters
 
-    while (1) {
+    while (!shouldExit.load()) {
         uint16_t width = 0, height = 0;
         std::vector<float> depthImage;
         std::vector<uint16_t> grayImage;
 
-        if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
             if (sharedFrameData.width > 0 && !sharedFrameData.depthImage.empty()) {
                 width = sharedFrameData.width;
                 height = sharedFrameData.height;
                 depthImage = sharedFrameData.depthImage;
                 grayImage = sharedFrameData.grayImage;
             }
-            xSemaphoreGive(xDataMutex);
         }
 
         if (width > 0 && height > 0 && !depthImage.empty()) {
@@ -262,39 +249,34 @@ void vDepthImageTask(void *pvParameters) {
             cv::Mat grayNorm;
             grayMat.convertTo(grayNorm, CV_8UC1, 255.0 / 1000.0);
 
-            // Display images (startWindowThread handles GUI updates)
-            // cv::imshow("Depth Image", depthColor);
-            // cv::imshow("Gray Image", grayNorm);
-            // cv::waitKey(1);
-        }
-
-        if (SHOW_GRID) {
-            cv::Mat grid = obstacle_avoidance.getGridVisualization();
-            if (!grid.empty()) {
-                cv::Mat gridScaled;
-                cv::resize(grid, gridScaled, cv::Size(), 2.0, 2.0, cv::INTER_NEAREST);
-                cv::imshow("Obstacle Grid", gridScaled);
-                cv::waitKey(1);
+            // Prepare display data for main thread
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                sharedDepthColor = depthColor.clone();
+                sharedGrayNorm = grayNorm.clone();
+                
+                if (SHOW_GRID) {
+                    cv::Mat grid = obstacle_avoidance.getGridVisualization();
+                    if (!grid.empty()) {
+                        cv::resize(grid, sharedGridScaled, cv::Size(), 2.0, 2.0, cv::INTER_NEAREST);
+                    }
+                }
+                
+                displayDataReady.store(true);
             }
         }
 
-        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // 20 FPS for display
     }
 }
 
 int main(int argc, char** argv) {
 #if DEBUG_MODE
-    std::cout << "Starting FreeRTOS Point Cloud Processing Application..." << std::endl;
+    std::cout << "Starting Linux Threaded Point Cloud Processing Application..." << std::endl;
 #endif
+    
     // Initialize UDP
     if (!initUDP()) {
-        return -1;
-    }
-
-    // Initialize FreeRTOS primitives
-    xDataMutex = xSemaphoreCreateMutex();
-    if (xDataMutex == NULL) {
-        std::cerr << "Failed to create mutex" << std::endl;
         return -1;
     }
 
@@ -303,41 +285,76 @@ int main(int argc, char** argv) {
     sharedFrameData.width = 0;
     sharedFrameData.height = 0;
 
-    // Create FreeRTOS tasks
-    BaseType_t result;
-
-    result = xTaskCreate(vPointCloudTask, "PointCloudTask", 4096, NULL, 3, &xPointCloudTaskHandle);
-    if (result != pdPASS) {
-        std::cerr << "Failed to create PointCloudTask" << std::endl;
-        return -1;
-    }
-
-    result = xTaskCreate(vUDPTask, "UDPTask", 8192, NULL, 2, &xUDPTaskHandle);
-    if (result != pdPASS) {
-        std::cerr << "Failed to create UDPTask" << std::endl;
-        return -1;
-    }
-
-    result = xTaskCreate(vCollisionAvoidanceTask, "CollisionAvoidanceTask", 4096, NULL, 3, &xCollisionAvoidanceTaskHandle);
-    if (result != pdPASS) {
-        std::cerr << "Failed to create CollisionAvoidanceTask" << std::endl;
-        return -1;
-    }
-
-    result = xTaskCreate(vDepthImageTask, "DepthImageTask", 8192, NULL, 1, &xDepthImageTaskHandle);
-    if (result != pdPASS) {
-        std::cerr << "Failed to create DepthImageTask" << std::endl;
-        return -1;
-    }
+    // Create threads using std::thread
+    std::thread pointCloudThread(pointCloudTask);
+    // std::thread udpThread(udpTask);
+    std::thread collisionThread(collisionAvoidanceTask);
+    std::thread depthThread(depthImageTask);
 
 #if DEBUG_MODE
-    std::cout << "FreeRTOS tasks created successfully. Starting scheduler..." << std::endl;
+    std::cout << "All threads created successfully. Running..." << std::endl;
 #endif
 
-    // Start FreeRTOS scheduler
-    vTaskStartScheduler();
+    std::cout << "Press Enter to exit..." << std::endl;
     
-    // Should never reach here
-    std::cerr << "FreeRTOS scheduler returned unexpectedly" << std::endl;
-    return -1;
+    // Main thread handles OpenCV display (required for macOS)
+    while (!shouldExit.load()) {
+        if (displayDataReady.load()) {
+            cv::Mat depthToShow, grayToShow, gridToShow;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                if (!sharedDepthColor.empty()) depthToShow = sharedDepthColor.clone();
+                if (!sharedGrayNorm.empty()) grayToShow = sharedGrayNorm.clone();
+                if (SHOW_GRID && !sharedGridScaled.empty()) gridToShow = sharedGridScaled.clone();
+                displayDataReady.store(false);
+            }
+            
+            if (!depthToShow.empty()) {
+                cv::imshow("Depth Image", depthToShow);
+            }
+            if (!grayToShow.empty()) {
+                cv::imshow("Gray Image", grayToShow);
+            }
+            if (!gridToShow.empty()) {
+                cv::imshow("Obstacle Grid", gridToShow);
+            }
+        }
+        
+        // Check for key press or if stdin has input
+        int key = cv::waitKey(1);
+        if (key == 27 || key == 'q') break;  // ESC or 'q' to exit
+        
+        // Non-blocking check for Enter key
+        fd_set readfds;
+        struct timeval tv;
+        FD_ZERO(&readfds);
+        FD_SET(STDIN_FILENO, &readfds);
+        tv.tv_sec = 0;
+        tv.tv_usec = 1000;  // 1ms timeout
+        
+        if (select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv) > 0) {
+            if (FD_ISSET(STDIN_FILENO, &readfds)) {
+                break;  // Enter was pressed
+            }
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));  // ~60 FPS display
+    }
+    
+    // Signal threads to exit
+    shouldExit.store(true);
+
+    // Wait for threads to complete
+    pointCloudThread.join();
+    // udpThread.join();
+    collisionThread.join();
+    depthThread.join();
+
+    // Cleanup
+    if (udp_socket >= 0) {
+        close(udp_socket);
+    }
+
+    std::cout << "Application terminated cleanly." << std::endl;
+    return 0;
 }
