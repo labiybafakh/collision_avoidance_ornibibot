@@ -84,6 +84,7 @@ target_include_directories(picoflexx_processor PRIVATE
 target_include_directories(pointcloud_viewer PRIVATE
     ${OPENGL_INCLUDE_DIRS}
     ${GLUT_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
 )
 
 # Link libraries for FreeRTOS processor
@@ -100,5 +101,6 @@ target_link_libraries(picoflexx_processor PRIVATE
 target_link_libraries(pointcloud_viewer PRIVATE
     ${OPENGL_LIBRARIES}
     ${GLUT_LIBRARIES}
+    ${OpenCV_LIBS}
     pthread
 )

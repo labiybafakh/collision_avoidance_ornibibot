@@ -106,7 +106,7 @@ void vPointCloudTask(void *pvParameters) {
         FrameData frame = picoflexx_.getFrameData();
 
         if (frame.hasData) {
-            rotateFrameImages(frame);
+            // rotateFrameImages(frame);
             // Rotate -90° around Z-axis to align camera frame
             if (xSemaphoreTake(xDataMutex, portMAX_DELAY) == pdTRUE) {
                 sharedFrameData = frame;
@@ -170,79 +170,51 @@ void vCollisionAvoidanceTask(void *pvParameters) {
     }
 }
 
-// FreeRTOS Task: UDP Point Cloud Sending
+// FreeRTOS Task: UDP Depth Image Sending
+// Sends fixed 224x172 uint8 depth image (38,528 bytes per frame)
 void vUDPTask(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(33); // ~30 FPS
 
+    const int UDP_WIDTH = 224;
+    const int UDP_HEIGHT = 172;
+    const float MAX_DEPTH = 4.0f;  // Max depth in meters for normalization
+
 #if DEBUG_MODE
-    std::cout << "UDP Task started" << std::endl;
+    std::cout << "UDP Task started (sending " << UDP_WIDTH << "x" << UDP_HEIGHT << " depth)" << std::endl;
 #endif
 
-    uint32_t frameCount = 0;
-
     while (1) {
-        std::vector<point3d> cloud;
+        uint16_t width = 0, height = 0;
+        std::vector<float> depthImage;
 
         if (xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            cloud = sharedFrameData.pointCloud;
+            if (sharedFrameData.width > 0 && !sharedFrameData.depthImage.empty()) {
+                width = sharedFrameData.width;
+                height = sharedFrameData.height;
+                depthImage = sharedFrameData.depthImage;
+            }
             xSemaphoreGive(xDataMutex);
         }
 
-        if (!cloud.empty()) {
-            frameCount++;
+        if (width > 0 && height > 0 && !depthImage.empty()) {
+            // Create OpenCV Mat from depth data
+            cv::Mat depthMat(height, width, CV_32FC1, depthImage.data());
 
-            // Filter point cloud for UDP transmission
-            std::vector<point3d> filtered_cloud;
-            const auto& params = obstacle_avoidance.getParams();
+            // Resize to fixed dimensions
+            cv::Mat resizedDepth;
+            cv::resize(depthMat, resizedDepth, cv::Size(UDP_WIDTH, UDP_HEIGHT), 0, 0, cv::INTER_LINEAR);
 
-            for (const auto& point : cloud) {
-                if (point.z >= params.minRange && point.z < params.maxRange &&
-                    abs(point.x) <= params.maxXDistance && abs(point.y) <= params.maxYDistance) {
-                    filtered_cloud.push_back(point);
-                }
-            }
+            // Convert to uint8 (0-255) for viewing
+            cv::Mat depthU8;
+            resizedDepth.convertTo(depthU8, CV_8UC1, 255.0 / MAX_DEPTH);
 
-            // Downsample for UDP transmission
-            auto pcl_cloud = pc_utils.convertToPCL(filtered_cloud);
-            auto downsampled_pcl_cloud = pc_utils.downsamplePCL(pcl_cloud, 0.015);
-
-#if DEBUG_MODE
-            if (frameCount % 30 == 0) {
-                std::cout << "[UDP] Frame " << frameCount << ": "
-                          << cloud.size() << " -> " << filtered_cloud.size()
-                          << " (filtered) -> " << downsampled_pcl_cloud.size()
-                          << " points (final)" << std::endl;
-            }
-#endif
-
-            // Send via UDP
-            if (udp_socket >= 0 && !pcl_cloud.empty()) {
-                std::vector<point3d> udp_points;
-                for (const auto& pt : pcl_cloud.points) {
-                    udp_points.push_back({pt.x, pt.y, pt.z});
-                }
-
-                const size_t MAX_UDP_SIZE = 8192;
-                const size_t max_points = MAX_UDP_SIZE / sizeof(point3d);
-
-                if (udp_points.size() > max_points) {
-                    std::vector<point3d> subsampled_points;
-                    subsampled_points.reserve(max_points);
-
-                    double step = static_cast<double>(udp_points.size()) / max_points;
-                    for (size_t i = 0; i < max_points && (static_cast<size_t>(i * step) < udp_points.size()); ++i) {
-                        size_t idx = static_cast<size_t>(i * step);
-                        subsampled_points.push_back(udp_points[idx]);
-                    }
-                    udp_points = std::move(subsampled_points);
-                }
-
-                size_t data_size = udp_points.size() * sizeof(point3d);
-                ssize_t sent = sendto(udp_socket, udp_points.data(), data_size, 0,
+            // Send raw depth data via UDP
+            if (udp_socket >= 0) {
+                ssize_t sent = sendto(udp_socket, depthU8.data, UDP_WIDTH * UDP_HEIGHT, 0,
                                      (struct sockaddr*)&viewer_addr, sizeof(viewer_addr));
                 if (sent < 0) {
-                    std::cerr << "UDP send failed: " << strerror(errno) << " (size: " << data_size << " bytes)" << std::endl;
+                    std::cerr << "UDP send failed: " << strerror(errno) << std::endl;
                 }
             }
         }
@@ -254,7 +226,7 @@ void vUDPTask(void *pvParameters) {
 // FreeRTOS Task: Depth Image Display (like ROS depth_image topic)
 void vDepthImageTask(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(50); // 20 FPS for display
+    const TickType_t xFrequency = pdMS_TO_TICKS(33); // 20 FPS for display
 
     const float maxFilter = 4.0f;  // Max depth in meters
 
@@ -277,8 +249,6 @@ void vDepthImageTask(void *pvParameters) {
             // Create OpenCV Mat from depth data (like ROS TYPE_32FC1)
             cv::Mat depthMat(height, width, CV_32FC1, depthImage.data());
 
-            std::cout << "width: " << width << "  height" << height << "\n";
-
             // Normalize depth to 0-255 for visualization
             cv::Mat depthNorm;
             depthMat.convertTo(depthNorm, CV_8UC1, 255.0 / maxFilter);
@@ -293,9 +263,9 @@ void vDepthImageTask(void *pvParameters) {
             grayMat.convertTo(grayNorm, CV_8UC1, 255.0 / 1000.0);
 
             // Display images (startWindowThread handles GUI updates)
-            cv::imshow("Depth Image", depthColor);
-            cv::imshow("Gray Image", grayNorm);
-            cv::waitKey(1);
+            // cv::imshow("Depth Image", depthColor);
+            // cv::imshow("Gray Image", grayNorm);
+            // cv::waitKey(1);
         }
 
         if (SHOW_GRID) {
