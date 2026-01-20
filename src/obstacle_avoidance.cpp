@@ -42,6 +42,31 @@ AvoidanceCommand ObstacleAvoidance::processPointCloud(const std::vector<point3d>
     return command;
 }
 
+AvoidanceCommand ObstacleAvoidance::processDepthImage(const cv::Mat& depthImage) {
+    if (!params_.enabled || depthImage.empty()) {
+        stats_.lastCommand = AvoidanceCommand::FORWARD;
+        return AvoidanceCommand::FORWARD;
+    }
+    
+    // Reset statistics
+    stats_.totalPoints = depthImage.rows * depthImage.cols;
+    stats_.obstaclePoints = 0;
+    stats_.leftObstacles = 0;
+    stats_.rightObstacles = 0;
+    stats_.minDistance = std::numeric_limits<float>::max();
+    
+    // Create obstacle grid
+    bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH] = {false};
+    
+    depthImageToGrid(depthImage, obstacleGrid);
+    
+    // Analyze grid for navigation commands
+    AvoidanceCommand command = analyzeObstacleGrid(obstacleGrid);
+    
+    stats_.lastCommand = command;
+    return command;
+}
+
 void ObstacleAvoidance::pointCloudToGrid(const std::vector<point3d>& cloud, 
                                         bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH]) {
     
@@ -52,7 +77,7 @@ void ObstacleAvoidance::pointCloudToGrid(const std::vector<point3d>& cloud,
     
     // Use configurable navigation envelope parameters
     const float MAX_RANGE = params_.maxRange;
-    const float MIN_RANGE = params_.minRange;
+    const float MIN_RANGE = paramjs_.minRange;
     const float MAX_X_DISTANCE = params_.maxXDistance;
     const float MAX_Y_DISTANCE = params_.maxYDistance;
     
@@ -97,6 +122,56 @@ void ObstacleAvoidance::pointCloudToGrid(const std::vector<point3d>& cloud,
         }
     }
 
+}
+
+void ObstacleAvoidance::depthImageToGrid(const cv::Mat& depthImage, 
+                                        bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH]) {
+    
+    // Clear last grid visualization buffer
+    for (auto &row : lastGrid_) {
+        row.fill(0);
+    }
+    
+    const float d_safe = params_.safetyDistance;  // d_safe from your equation
+    const int halfWidth = GRID_WIDTH / 2;
+    
+    // Resize depth image to match our grid dimensions if needed
+    cv::Mat resizedDepth;
+    if (depthImage.rows != GRID_HEIGHT || depthImage.cols != GRID_WIDTH) {
+        cv::resize(depthImage, resizedDepth, cv::Size(GRID_WIDTH, GRID_HEIGHT), 0, 0, cv::INTER_LINEAR);
+    } else {
+        resizedDepth = depthImage;
+    }
+    
+    // Direct implementation of Eq. obstacle-matrix: O_ij = 1 if D_ij < d_safe, 0 otherwise
+    for (int i = 0; i < GRID_HEIGHT; i++) {
+        for (int j = 0; j < GRID_WIDTH; j++) {
+            float D_ij = resizedDepth.at<float>(i, j);  // Distance at pixel (i,j)
+            
+            // Skip invalid/zero depth values
+            if (D_ij <= 0 || std::isnan(D_ij) || std::isinf(D_ij)) {
+                continue;
+            }
+            
+            // Update minimum distance
+            stats_.minDistance = std::min(stats_.minDistance, D_ij);
+            
+            // Apply obstacle matrix equation: O_ij = 1 if D_ij < d_safe
+            if (D_ij < d_safe) {
+                obstacleGrid[i][j] = true;  // O_ij = 1
+                lastGrid_[i][j] = 255;      // For visualization
+                stats_.obstaclePoints++;
+                
+                // Count left vs right obstacles for Eq. left-count and right-count
+                if (j < halfWidth) {        // Left side: j = 1 to n/2
+                    stats_.leftObstacles++;  // C_left += O_ij
+                } else {                    // Right side: j = n/2+1 to n  
+                    stats_.rightObstacles++; // C_right += O_ij
+                }
+            }
+            // else: O_ij = 0 (already initialized to false)
+        }
+    }
 }
 
 AvoidanceCommand ObstacleAvoidance::analyzeObstacleGrid(const bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH]) {

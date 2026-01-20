@@ -6,6 +6,7 @@
 #include <memory>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <opencv2/opencv.hpp>
 #include "picoflexx.hpp"
 
@@ -33,6 +34,9 @@ public:
     
     // Process point cloud and return avoidance command
     AvoidanceCommand processPointCloud(const std::vector<point3d>& cloud);
+    
+    // Process depth image directly and return avoidance command
+    AvoidanceCommand processDepthImage(const cv::Mat& depthImage);
     
     // Get current parameters
     ObstacleAvoidanceParams& getParams() { return params_; }
@@ -63,6 +67,10 @@ private:
     
     // Convert 3D points to 2D grid for obstacle detection
     void pointCloudToGrid(const std::vector<point3d>& cloud, 
+                         bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH]);
+    
+    // Convert depth image directly to obstacle grid (Eq. obstacle-matrix)
+    void depthImageToGrid(const cv::Mat& depthImage, 
                          bool obstacleGrid[GRID_HEIGHT][GRID_WIDTH]);
     
     // Analyze grid for obstacle patterns

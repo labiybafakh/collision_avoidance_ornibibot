@@ -202,29 +202,26 @@ void collisionAvoidanceTask() {
     AvoidanceCommand lastCommand = AvoidanceCommand::FORWARD;
 
     while (!shouldExit.load()) {
-        std::vector<point3d> cloud;
+        std::vector<float> depthImage;
         std::chrono::microseconds timestamp{0};
+        int width, height;
 
         {
             std::lock_guard<std::mutex> lock(dataMutex);
-            cloud = sharedFrameData.pointCloud;
-            timestamp = sharedFrameData.timestamp;
+            if (sharedFrameData.width > 0 && !sharedFrameData.depthImage.empty()) {
+                width = sharedFrameData.width;
+                height = sharedFrameData.height;
+                depthImage = sharedFrameData.depthImage;
+                timestamp = sharedFrameData.timestamp;
+            }
         }
 
-        if (!cloud.empty()) {
-            // Filter raw point cloud to navigation envelope
-            std::vector<point3d> filtered_cloud;
-            const auto& params = obstacle_avoidance.getParams();
+        if (width > 0 && height > 0 && !depthImage.empty()) {
+            // Create depth image matrix
+            cv::Mat depthMat(height, width, CV_32FC1, depthImage.data());
 
-            for (const auto& point : cloud) {
-                if (point.z >= params.minRange && point.z < params.maxRange &&
-                    abs(point.x) <= params.maxXDistance && abs(point.y) <= params.maxYDistance) {
-                    filtered_cloud.push_back(point);
-                }
-            }
-
-            // Process obstacle avoidance
-            AvoidanceCommand avoidance_cmd = obstacle_avoidance.processPointCloud(filtered_cloud);
+            // Process obstacle avoidance directly from depth image
+            AvoidanceCommand avoidance_cmd = obstacle_avoidance.processDepthImage(depthMat);
 
             // Output navigation command with camera timestamp (like ROS)
             const char* cmdStr;
