@@ -18,6 +18,7 @@ endif()
 # Find packages
 #find_package(royale REQUIRED)
 find_package(OpenGL REQUIRED)
+find_package(jsoncpp REQUIRED)
 find_package(GLUT REQUIRED)
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(PCL REQUIRED COMPONENTS common io filters features segmentation surface sample_consensus)
