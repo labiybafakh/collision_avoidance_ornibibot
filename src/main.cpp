@@ -1,10 +1,7 @@
 #include <iostream>
 #include <cmath>
 #include "picoflexx.hpp"
-#include "pointcloud_utils.hpp"
 #include "obstacle_avoidance.hpp"
-#include <pcl/point_types.h>
-#include <pcl/point_cloud.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -17,6 +14,8 @@
 #include <mutex>
 #include <atomic>
 #include <sys/select.h>
+#include <fcntl.h>
+#include <termios.h>
 
 // Set to 1 for debug output, 0 for release
 #define DEBUG_MODE 0
@@ -57,7 +56,6 @@ static void rotateFrameImages(FrameData& frame) {
 
 // Global objects
 picoflexx picoflexx_;
-PointCloudUtils pc_utils;
 ObstacleAvoidance obstacle_avoidance;
 
 // Shared data protection
@@ -71,9 +69,16 @@ FrameData sharedFrameData;
 cv::Mat sharedDepthColor, sharedGrayNorm, sharedGridScaled;
 std::atomic<bool> displayDataReady{false};
 
+// Shared serial command data
+std::atomic<AvoidanceCommand> currentCommand{AvoidanceCommand::FORWARD};
+
 // UDP socket
 int udp_socket = -1;
 struct sockaddr_in viewer_addr;
+
+// Serial port
+int serial_fd = -1;
+const char* SERIAL_PORT = "/dev/ttyUSB0";
 
 // Initialize UDP socket
 bool initUDP() {
@@ -92,6 +97,83 @@ bool initUDP() {
     std::cout << "UDP socket initialized, will send to 127.0.0.1:8080" << std::endl;
 #endif
     return true;
+}
+
+// Initialize serial port
+bool initSerial() {
+    serial_fd = open(SERIAL_PORT, O_WRONLY | O_NOCTTY);
+    if (serial_fd < 0) {
+        std::cerr << "Failed to open serial port " << SERIAL_PORT << std::endl;
+        return false;
+    }
+    
+    struct termios tty;
+    if (tcgetattr(serial_fd, &tty) != 0) {
+        std::cerr << "Error getting serial port attributes" << std::endl;
+        close(serial_fd);
+        serial_fd = -1;
+        return false;
+    }
+    
+    // Configure serial port: 9600 baud, 8N1
+    cfsetospeed(&tty, B9600);
+    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
+    tty.c_cflag &= ~(PARENB | PARODD);
+    tty.c_cflag &= ~CSTOPB;
+    tty.c_cflag &= ~CRTSCTS;
+    
+    if (tcsetattr(serial_fd, TCSANOW, &tty) != 0) {
+        std::cerr << "Error setting serial port attributes" << std::endl;
+        close(serial_fd);
+        serial_fd = -1;
+        return false;
+    }
+    
+#if DEBUG_MODE
+    std::cout << "Serial port " << SERIAL_PORT << " initialized" << std::endl;
+#endif
+    return true;
+}
+
+// Thread: Serial Communication
+void serialTask() {
+#if DEBUG_MODE
+    std::cout << "Serial Task started" << std::endl;
+#endif
+    
+    while (!shouldExit.load()) {
+        AvoidanceCommand cmd = currentCommand.load();
+        
+        if (serial_fd >= 0) {
+            uint8_t roll_value = 127; // Middle value (0 degrees)
+            
+            switch(cmd) {
+                case AvoidanceCommand::TURN_LEFT:
+                    roll_value = 127 - 25; // Target angle -25 degrees
+                    break;
+                case AvoidanceCommand::TURN_RIGHT:
+                    roll_value = 127 + 25; // Target angle +25 degrees
+                    break;
+                case AvoidanceCommand::FORWARD:
+                case AvoidanceCommand::STOP:
+                default:
+                    roll_value = 127; // 0 degrees (forward)
+                    break;
+            }
+            
+            ssize_t written = write(serial_fd, &roll_value, 1);
+            if (written != 1) {
+                std::cerr << "Serial write failed: " << strerror(errno) << std::endl;
+            }
+#if DEBUG_MODE
+            else {
+                std::cout << "Sent roll command: " << static_cast<int>(roll_value) << std::endl;
+            }
+#endif
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 Hz send rate
+    }
 }
 
 // Thread: Frame Data Acquisition (like ROS onNewData)
@@ -157,6 +239,10 @@ void collisionAvoidanceTask() {
             uint64_t sec = ts_ns / 1000000000;
             uint64_t nsec = ts_ns % 1000000000;
             std::cout << "[" << sec << "." << std::setfill('0') << std::setw(9) << nsec << "] " << cmdStr << "\n";
+            
+            // Update shared command for serial thread
+            currentCommand.store(avoidance_cmd);
+            
             lastCommand = avoidance_cmd;
         }
 
@@ -279,6 +365,12 @@ int main(int argc, char** argv) {
     if (!initUDP()) {
         return -1;
     }
+    
+    Initialize Serial (required for operation)
+    if (!initSerial()) {
+        std::cerr << "Serial initialization failed. Cannot continue without serial communication." << std::endl;
+        return -1;
+    }
 
     // Initialize shared data
     sharedFrameData.hasData = false;
@@ -290,6 +382,7 @@ int main(int argc, char** argv) {
     // std::thread udpThread(udpTask);
     std::thread collisionThread(collisionAvoidanceTask);
     std::thread depthThread(depthImageTask);
+    std::thread serialThread(serialTask);
 
 #if DEBUG_MODE
     std::cout << "All threads created successfully. Running..." << std::endl;
@@ -349,10 +442,14 @@ int main(int argc, char** argv) {
     // udpThread.join();
     collisionThread.join();
     depthThread.join();
+    // serialThread.join();
 
     // Cleanup
     if (udp_socket >= 0) {
         close(udp_socket);
+    }
+    if (serial_fd >= 0) {
+        close(serial_fd);
     }
 
     std::cout << "Application terminated cleanly." << std::endl;

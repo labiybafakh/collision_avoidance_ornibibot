@@ -53,7 +53,7 @@ bool picoflexx::setUpCamera()
 
      desired_usecase_index = 0; // Initialize to first use case
      for(size_t i=0; i < useCases.size(); i++){
-        if(useCases[i] == "MODE_9_25FPS_450") {
+        if(useCases[i] == "Mode_9_30fps") {
             desired_usecase_index = i;
             break;
         }
@@ -90,14 +90,14 @@ bool picoflexx::setUpCamera()
     }
     std::cout << std::endl;
     
-    if (m_cameraDevice->setExposureTime (50, streamIds[0]) != royale::CameraStatus::SUCCESS)
-    {
-        std::cerr << "Cannot set exposure time for stream" << streamIds[0] << std::endl;
-    }
-    else
-    {
-        std::cout << "Changed exposure time for stream " << streamIds[0] << " to 200 microseconds ..." << std::endl;
-    }
+    // if (m_cameraDevice->setExposureTime (50, streamIds[0]) != royale::CameraStatus::SUCCESS)
+    // {
+    //     std::cerr << "Cannot set exposure time for stream" << streamIds[0] << std::endl;
+    // }
+    // else
+    // {
+    //     std::cout << "Changed exposure time for stream " << streamIds[0] << " to 200 microseconds ..." << std::endl;
+    // }
 
         // start capturing
     ret = m_cameraDevice->startCapture();
