@@ -192,9 +192,9 @@ AvoidanceCommand ObstacleAvoidance::analyzeObstacleGrid(const bool obstacleGrid[
     }
     
     // Critical obstacle density - stop
-    if (totalGridObstacles > (GRID_WIDTH * GRID_HEIGHT) * 0.6f) {
-        return AvoidanceCommand::STOP;
-    }
+    // if (totalGridObstacles > (GRID_WIDTH * GRID_HEIGHT) * 0.6f) {
+    //     return AvoidanceCommand::STOP;
+    // }
     
     // Determine turn direction based on obstacle distribution
     // (Similar to your left/right counting approach)

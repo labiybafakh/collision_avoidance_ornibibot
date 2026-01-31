@@ -16,6 +16,10 @@
 #include <sys/select.h>
 #include <fcntl.h>
 #include <termios.h>
+#include <cstdint>          // uint8_t
+#include <cerrno>           // errno
+#include <linux/i2c-dev.h>  // I2C_SLAVE, /dev/i2c-*
+#include <sys/ioctl.h>      // ioctl()
 
 // Set to 1 for debug output, 0 for release
 #define DEBUG_MODE 0
@@ -72,13 +76,41 @@ std::atomic<bool> displayDataReady{false};
 // Shared serial command data
 std::atomic<AvoidanceCommand> currentCommand{AvoidanceCommand::FORWARD};
 
+// Shared serial command data
+std::atomic<AvoidanceCommand> currentCommand{AvoidanceCommand::FORWARD};
+
 // UDP socket
 int udp_socket = -1;
 struct sockaddr_in viewer_addr;
 
 // Serial port
 int serial_fd = -1;
-const char* SERIAL_PORT = "/dev/ttyUSB0";
+const char* SERIAL_PORT = "/dev/ttyACM0";
+
+static constexpr const char* I2C_DEV = "/dev/i2c-4";
+static constexpr uint8_t I2C_ADDR   = 0x42;
+
+int i2c_fd = -1;
+
+bool openI2C()
+{
+    i2c_fd = open(I2C_DEV, O_RDWR);
+    if (i2c_fd < 0) {
+        std::cerr << "I2C open failed (" << I2C_DEV << "): " << strerror(errno) << "\n";
+        return false;
+    }
+
+    if (ioctl(i2c_fd, I2C_SLAVE, I2C_ADDR) < 0) {
+        std::cerr << "I2C ioctl(I2C_SLAVE) failed addr=0x"
+                  << std::hex << int(I2C_ADDR) << std::dec
+                  << ": " << strerror(errno) << "\n";
+        close(i2c_fd);
+        i2c_fd = -1;
+        return false;
+    }
+    return true;
+}
+
 
 // Initialize UDP socket
 bool initUDP() {
@@ -99,41 +131,33 @@ bool initUDP() {
     return true;
 }
 
-// Initialize serial port
 bool initSerial() {
-    serial_fd = open(SERIAL_PORT, O_WRONLY | O_NOCTTY);
-    if (serial_fd < 0) {
-        std::cerr << "Failed to open serial port " << SERIAL_PORT << std::endl;
-        return false;
-    }
-    
-    struct termios tty;
-    if (tcgetattr(serial_fd, &tty) != 0) {
-        std::cerr << "Error getting serial port attributes" << std::endl;
-        close(serial_fd);
-        serial_fd = -1;
-        return false;
-    }
-    
-    // Configure serial port: 9600 baud, 8N1
-    cfsetospeed(&tty, B9600);
-    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
-    tty.c_cflag &= ~(PARENB | PARODD);
-    tty.c_cflag &= ~CSTOPB;
+    serial_fd = open(SERIAL_PORT, O_RDWR | O_NOCTTY | O_SYNC);
+    if (serial_fd < 0) return false;
+
+    struct termios tty{};
+    tcgetattr(serial_fd, &tty);
+
+    cfmakeraw(&tty);
+
+    cfsetispeed(&tty, B115200);
+    cfsetospeed(&tty, B115200);
+
+    tty.c_cflag |= (CREAD | CLOCAL);
     tty.c_cflag &= ~CRTSCTS;
-    
-    if (tcsetattr(serial_fd, TCSANOW, &tty) != 0) {
-        std::cerr << "Error setting serial port attributes" << std::endl;
-        close(serial_fd);
-        serial_fd = -1;
-        return false;
-    }
-    
-#if DEBUG_MODE
-    std::cout << "Serial port " << SERIAL_PORT << " initialized" << std::endl;
-#endif
+    tty.c_cflag &= ~CSTOPB;
+    tty.c_cflag &= ~PARENB;
+    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
+
+    tty.c_cc[VMIN]  = 0;
+    tty.c_cc[VTIME] = 1;
+
+    tcsetattr(serial_fd, TCSANOW, &tty);
+    tcflush(serial_fd, TCIOFLUSH);
+
     return true;
 }
+
 
 // Thread: Serial Communication
 void serialTask() {
@@ -145,21 +169,24 @@ void serialTask() {
         AvoidanceCommand cmd = currentCommand.load();
         
         if (serial_fd >= 0) {
-            uint8_t roll_value = 127; // Middle value (0 degrees)
+            int8_t target_roll = 0; // Middle value (0 degrees)
             
             switch(cmd) {
                 case AvoidanceCommand::TURN_LEFT:
-                    roll_value = 127 - 25; // Target angle -25 degrees
+                    target_roll = -30; // Target angle -25 degrees
                     break;
                 case AvoidanceCommand::TURN_RIGHT:
-                    roll_value = 127 + 25; // Target angle +25 degrees
+                    target_roll = 30; // Target angle +25 degrees
                     break;
                 case AvoidanceCommand::FORWARD:
                 case AvoidanceCommand::STOP:
                 default:
-                    roll_value = 127; // 0 degrees (forward)
+                    target_roll = 0; // 0 degrees (forward)
                     break;
             }
+
+            uint8_t roll_value = 127 + target_roll; // Map -30 to 97, 0 to 127, 30 to 157
+
             
             ssize_t written = write(serial_fd, &roll_value, 1);
             if (written != 1) {
@@ -171,6 +198,9 @@ void serialTask() {
             }
 #endif
         }
+
+        // std::cout << "serial is running..." << "\n";
+        
         
         std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 Hz send rate
     }
@@ -203,7 +233,9 @@ void collisionAvoidanceTask() {
 
     while (!shouldExit.load()) {
         std::vector<float> depthImage;
+        std::vector<float> depthImage;
         std::chrono::microseconds timestamp{0};
+        int width, height;
         int width, height;
 
         {
@@ -219,7 +251,20 @@ void collisionAvoidanceTask() {
         if (width > 0 && height > 0 && !depthImage.empty()) {
             // Create depth image matrix
             cv::Mat depthMat(height, width, CV_32FC1, depthImage.data());
+            if (sharedFrameData.width > 0 && !sharedFrameData.depthImage.empty()) {
+                width = sharedFrameData.width;
+                height = sharedFrameData.height;
+                depthImage = sharedFrameData.depthImage;
+                timestamp = sharedFrameData.timestamp;
+            }
+        }
 
+        if (width > 0 && height > 0 && !depthImage.empty()) {
+            // Create depth image matrix
+            cv::Mat depthMat(height, width, CV_32FC1, depthImage.data());
+
+            // Process obstacle avoidance directly from depth image
+            AvoidanceCommand avoidance_cmd = obstacle_avoidance.processDepthImage(depthMat);
             // Process obstacle avoidance directly from depth image
             AvoidanceCommand avoidance_cmd = obstacle_avoidance.processDepthImage(depthMat);
 
@@ -236,6 +281,10 @@ void collisionAvoidanceTask() {
             uint64_t sec = ts_ns / 1000000000;
             uint64_t nsec = ts_ns % 1000000000;
             std::cout << "[" << sec << "." << std::setfill('0') << std::setw(9) << nsec << "] " << cmdStr << "\n";
+            
+            // Update shared command for serial thread
+            currentCommand.store(avoidance_cmd);
+            
             
             // Update shared command for serial thread
             currentCommand.store(avoidance_cmd);
@@ -363,7 +412,7 @@ int main(int argc, char** argv) {
         return -1;
     }
     
-    Initialize Serial (required for operation)
+    // Initialize Serial (required for operation)
     if (!initSerial()) {
         std::cerr << "Serial initialization failed. Cannot continue without serial communication." << std::endl;
         return -1;
@@ -379,6 +428,7 @@ int main(int argc, char** argv) {
     // std::thread udpThread(udpTask);
     std::thread collisionThread(collisionAvoidanceTask);
     std::thread depthThread(depthImageTask);
+    std::thread serialThread(serialTask);
     std::thread serialThread(serialTask);
 
 #if DEBUG_MODE
@@ -439,7 +489,7 @@ int main(int argc, char** argv) {
     // udpThread.join();
     collisionThread.join();
     depthThread.join();
-    // serialThread.join();
+    serialThread.join();
 
     // Cleanup
     if (udp_socket >= 0) {
@@ -448,7 +498,11 @@ int main(int argc, char** argv) {
     if (serial_fd >= 0) {
         close(serial_fd);
     }
+    if (serial_fd >= 0) {
+        close(serial_fd);
+    }
 
     std::cout << "Application terminated cleanly." << std::endl;
     return 0;
 }
+
